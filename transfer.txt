@@ -60,3 +60,15 @@ def suggest_access_for_user(user_access_items, top_n=5):
 	•	How long approvals take by domain/system/profile
 
 
+access_per_request = ir.groupby('historical_request_id')['access_key'].apply(list)
+
+# Convert to list of transactions
+transactions = access_per_request.tolist()
+
+# FP-Growth
+te = TransactionEncoder()
+te_matrix = te.fit_transform(transactions)
+df_encoded = pd.DataFrame(te_matrix, columns=te.columns_)
+
+frequent_itemsets = fpgrowth(df_encoded, min_support=0.3, use_colnames=True)
+
