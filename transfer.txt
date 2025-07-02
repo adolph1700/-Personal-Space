@@ -1,0 +1,62 @@
+import pandas as pd
+
+hist = pd.read_csv("historical_requests.csv")
+ir = pd.read_csv("ir_access_requests.csv")
+
+# Merge IR actions with request metadata
+merged = pd.merge(ir, hist, on="historical_request_id", how="left")
+
+
+import pandas as pd
+
+hist = pd.read_csv("historical_requests.csv")
+ir = pd.read_csv("ir_access_requests.csv")
+
+# Merge IR actions with request metadata
+merged = pd.merge(ir, hist, on="historical_request_id", how="left")
+
+
+# Filter for only granted access
+granted = merged[(merged['Action'] == 'Add') & (merged['Status'] == 'Approved')]
+
+# Create unique access key
+granted['access_item'] = granted['Profile'] + " - " + granted['Authorization']
+
+# Group per employee
+access_per_user = granted.groupby('emplid')['access_item'].apply(list).reset_index()
+
+from mlxtend.preprocessing import TransactionEncoder
+from mlxtend.frequent_patterns import fpgrowth
+
+transactions = access_per_user['access_item'].tolist()
+
+te = TransactionEncoder()
+df_encoded = te.fit_transform(transactions)
+df_encoded = pd.DataFrame(df_encoded, columns=te.columns_)
+
+frequent_itemsets = fpgrowth(df_encoded, min_support=0.5, use_colnames=True)
+
+def suggest_access_for_user(user_access_items, top_n=5):
+    """Given a list of a user's access so far, return most common missing items."""
+    matched_sets = frequent_itemsets[frequent_itemsets['itemsets'].apply(lambda x: x.issubset(set(user_access_items)))]
+    
+    candidate_items = set()
+    for s in matched_sets['itemsets']:
+        candidate_items.update(s)
+
+    missing = candidate_items - set(user_access_items)
+    return list(missing)[:top_n]
+
+💡 Insights Possible from This Data
+	1.	Auto-suggest for new joiners:
+	•	Based on Org_group + Title
+	2.	Low-risk auto-approval candidates:
+	•	Accesses requested multiple times with identical profiles
+	3.	Access bundles:
+	•	What common sets of profiles are always requested together?
+	4.	Request pattern anomaly detection:
+	•	When an employee requests a profile no one in their group ever has
+	5.	Access maturity heatmap:
+	•	How long approvals take by domain/system/profile
+
+
