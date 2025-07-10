@@ -72,3 +72,37 @@ df_encoded = pd.DataFrame(te_matrix, columns=te.columns_)
 
 frequent_itemsets = fpgrowth(df_encoded, min_support=0.3, use_colnames=True)
 
+new_filename = f[:f.index('.xlsm')] + '.zip'
+copyfile(f, new_filename)
+
+with ZipFile('new_arc.zip', 'w') as new_arc:
+    with ZipFile(new_filename, 'r') as zip:
+        for file in zip.namelist():
+            if file != 'xl/vbaProject.bin':
+                with new_arc.open(file, 'w') as new_file:
+                    with zip.open(file, 'r') as old_file:
+                        new_file.write(old_file.read())
+metadata = {
+    'CMG': '82802EAEB4B2B4B2B0B6B0B6',
+    'DPB': '0406A830A8AFC5AFC5503BB0C5E451A1601C8376D39507149E04DBDE9B2528620BA427CCE0E6',
+    'GC': '86842AB22EB6B1B7B1B7B1',
+}
+f = input('Enter Filename of xlsm file: ')
+
+def replace_val(s, key, new_val):
+    start = s.index(f'{key}="')
+    end = s.index('"', start + 5)
+    s = s.replace(s[start:end+1], f'{key}="{new_val}"')
+    return s
+with new_arc.open('xl/vbaProject.bin', 'w') as new_config:
+    with zip.open('xl/vbaProject.bin') as config:
+        old_s = config.read()
+        s = old_s.decode('ansi')
+        for key, val in metadata.items():
+            s = replace_val(s, key, val)
+        s = s.encode('ansi')
+        new_config.write(s)
+
+
+os.rename('new_arc.zip', f'{f[:f.index(".xlsm")]} - Unlocked.xlsm')
+os.remove(new_filename)
