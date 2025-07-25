@@ -1,107 +1,99 @@
-' VBA script to test for key prerequisites for modern authentication flows.
-' It checks for general internet access, connectivity to Azure AD,
-' and the ability to perform a localhost redirect.
+Option Explicit
 
-' --- Main Subroutine to run all tests ---
-Public Sub RunAllPrerequisiteTests()
-    Dim results As String
-    
-    ' Initialize results string with a header
-    results = "Prerequisite Test Results:" & vbCrLf & "--------------------------------" & vbCrLf & vbCrLf
-    
-    ' Run each test and append the result to the string
-    results = results & "Test 1: General Internet Access" & vbCrLf & TestOutboundConnection() & vbCrLf & vbCrLf
-    results = results & "Test 2: Azure AD Authentication Endpoint" & vbCrLf & TestAzureADConnection() & vbCrLf & vbCrLf
-    results = results & "Test 3: Localhost Redirect Capability" & vbCrLf & TestLocalhostNavigation() & vbCrLf & vbCrLf
-    
-    results = results & "--------------------------------" & vbCrLf & "See comments in the code for details on what each test means."
+'========= constants you must fill =========
+Const TENANT      As String = "common"                     'or your tenantId
+Const CLIENT_ID   As String = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+Const SCOPE       As String = "https://graph.microsoft.com/User.Read"
+'===========================================
 
-    ' Display the final results in a message box
-    MsgBox results, vbInformation, "Prerequisite Check Complete"
+Sub GetToken_DeviceCode()
+    Dim dcInfo As Dictionary: Set dcInfo = StartDeviceCode()
+    If dcInfo Is Nothing Then Exit Sub
+    
+    MsgBox "Please open " & dcInfo("verification_uri") & _
+           " and enter code: " & dcInfo("user_code"), _
+           vbInformation, "Sign-in Required"
+    
+    'Optionally auto-open browser
+    Shell "cmd /c start " & dcInfo("verification_uri"), vbHide
+    
+    Dim token As Dictionary
+    token = PollForToken(dcInfo("device_code"), dcInfo("interval"))
+    If Not token Is Nothing Then
+        Debug.Print "ACCESS TOKEN:" & vbCrLf & token("access_token")
+    End If
 End Sub
 
-
-' --- TEST 1: Checks for basic outbound internet connectivity ---
-Private Function TestOutboundConnection() As String
-    On Error GoTo ConnectionError ' Error handling
+'--- step A: get device_code ----------------
+Function StartDeviceCode() As Dictionary
+    Dim url As String, body As String, json As Dictionary
+    url = "https://login.microsoftonline.com/" & TENANT & "/oauth2/v2.0/devicecode"
+    body = "client_id=" & urlencode(CLIENT_ID) & _
+           "&scope=" & urlencode(SCOPE)
     
-    Dim http As Object
-    Set http = CreateObject("MSXML2.XMLHTTP.6.0")
+    Set json = HttpPostForm(url, body)
+    If json Is Nothing Then Exit Function
     
-    ' Attempt to connect to a highly available, benign website.
-    http.Open "GET", "https://www.microsoft.com", False
-    http.send
-    
-    ' A status of 200 means the request was successful.
-    If http.Status = 200 Then
-        TestOutboundConnection = "  [SUCCESS] - Connection to the public internet is allowed."
+    If json.Exists("device_code") Then
+        Set StartDeviceCode = json
     Else
-        TestOutboundConnection = "  [FAILURE] - Connected, but received an unexpected status: " & http.Status & " " & http.statusText
+        MsgBox "Failed: " & json("error") & " - " & json("error_description")
     End If
-    
-    Set http = Nothing
-    Exit Function
-
-ConnectionError:
-    TestOutboundConnection = "  [FAILURE] - Could not connect to the internet. A firewall or proxy may be blocking outbound VBA requests. Error: " & Err.Description
-    Set http = Nothing
 End Function
 
-
-' --- TEST 2: Checks for specific connectivity to the Microsoft login service ---
-Private Function TestAzureADConnection() As String
-    On Error GoTo ConnectionError
+'--- step E: poll /token until 200 ---------- 
+Function PollForToken(deviceCode As String, intervalSec As Long) As Dictionary
+    Dim url As String, body As String, started As Date
+    url = "https://login.microsoftonline.com/" & TENANT & "/oauth2/v2.0/token"
+    body = "grant_type=urn:ietf:params:oauth:grant-type:device_code" & _
+           "&client_id=" & urlencode(CLIENT_ID) & _
+           "&device_code=" & urlencode(deviceCode)
     
-    Dim http As Object
-    Set http = CreateObject("MSXML2.XMLHTTP.6.0")
-    
-    ' This URL is the root of the Azure AD authentication service.
-    http.Open "GET", "https://login.microsoftonline.com", False
-    http.send
-    
-    ' Any successful connection (even a redirect, like status 302) is a success here.
-    If http.Status >= 200 And http.Status < 400 Then
-         TestAzureADConnection = "  [SUCCESS] - Connection to the Azure AD login service is allowed."
-    Else
-        TestAzureADConnection = "  [FAILURE] - Connected, but received an error status: " & http.Status & " " & http.statusText
-    End If
-
-    Set http = Nothing
-    Exit Function
-
-ConnectionError:
-    TestAzureADConnection = "  [FAILURE] - Could not connect to Azure AD. The firewall is likely blocking this specific endpoint. Error: " & Err.Description
-    Set http = Nothing
-End Function
-
-
-' --- TEST 3: Checks if VBA can launch a browser and navigate to a localhost address ---
-Private Function TestLocalhostNavigation() As String
-    On Error GoTo NavigationError
-    
-    Dim ie As Object
-    Set ie = CreateObject("InternetExplorer.Application")
-    
-    ' Attempt to navigate to a common localhost address used for redirects.
-    ie.Navigate "http://localhost:8080/callback"
-    
-    ' Wait for the browser to become idle.
-    Do While ie.Busy
+    started = Now
+    Do
+        Dim json As Dictionary: Set json = HttpPostForm(url, body)
+        If json Is Nothing Then Exit Do
+        
+        Select Case json("status")   'status is custom wrapper (see helper)
+            Case 200
+                Set PollForToken = json: Exit Function
+            Case 400
+                Select Case json("error")
+                    Case "authorization_pending":   'user hasn’t finished yet
+                        'just continue polling
+                    Case "slow_down":
+                        intervalSec = intervalSec + 5
+                    Case "expired_token", "access_denied"
+                        MsgBox "Auth failed: " & json("error_description")
+                        Exit Do
+                End Select
+        End Select
         DoEvents
-    Loop
-    
-    ' SUCCESS: If we reach this point without an error, it means security
-    ' software did not block the attempt to control the browser and navigate locally.
-    ' A "Page cannot be displayed" error in the browser itself is expected and is a SUCCESS.
-    TestLocalhostNavigation = "  [SUCCESS] - Browser automation to a localhost address was not blocked."
-    
-    ie.Quit
-    Set ie = Nothing
-    Exit Function
+        Application.Wait Now + TimeSerial(0, 0, intervalSec)
+    Loop While DateDiff("s", started, Now) < 900   '15-minute safety cut-off
+End Function
 
-NavigationError:
-    ' FAILURE: An error here usually means that endpoint security software
-    ' or a group policy is preventing scripts from automating the browser.
-    TestLocalhostNavigation = "  [FAILURE] - Could not navigate to localhost. Endpoint security may be blocking browser automation. Error: " & Err.Description
-    Set ie = Nothing
+'========= tiny HTTP & JSON helpers =========
+Function HttpPostForm(url As String, body As String) As Dictionary
+    Dim http As Object: Set http = CreateObject("MSXML2.XMLHTTP.6.0")
+    http.Open "POST", url, False
+    http.setRequestHeader "Content-Type", "application/x-www-form-urlencoded"
+    http.send body
+    
+    Dim result As Dictionary
+    Set result = JsonConverter.ParseJson(http.responseText)
+    result.Add "status", http.Status
+    Set HttpPostForm = result
+End Function
+
+Function urlencode(str As String) As String
+    Dim i&, c$, o$
+    For i = 1 To Len(str)
+        c = Mid$(str, i, 1)
+        If c Like "[A-Za-z0-9-_.~]" Then
+            o = o & c
+        Else
+            o = o & "%" & Hex(AscW(c))
+        End If
+    Next: urlencode = o
 End Function
